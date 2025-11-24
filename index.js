@@ -26,6 +26,7 @@ async function run() {
 
     const db = client.db('zap_shift_db');
     const parcelsCollection = db.collection('parcels');
+    const paymentCollection = db.collection('payments');
 
     // parcels api
     app.get('/parcels', async (req, res) => {
@@ -65,6 +66,42 @@ async function run() {
       res.send(result);
     });
 
+    app.patch('/payment-success', async (req, res) => {
+      const sessionId = req.query.session_id;
+
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      console.log('session retrieve:', session);
+      if (session.payment_status === 'paid') {
+        const id = session.metadata.parcelId;
+        const query = { _id: new ObjectId(id) };
+        const update = {
+          $set: {
+            paymentStatus: 'paid'
+          }
+        };
+        const result = await parcelsCollection.updateOne(query, update);
+
+        const payment = {
+          amount: session.amount_total / 100,
+          currency: session.currency,
+          customerEmail: session.customer_email,
+          parcelId: session.metadata.parcelId,
+          percelName: session.metadata.percelName,
+          transactionId: session.payment_intent,
+          paymentStatus: session.paymentStatus,
+          paidAt: new Date(),
+          trackingId: ''
+        };
+
+        if(session.payment_status === 'paid'){
+          const resultPayment = await paymentCollection.insertOne(payment);
+          res.send({success: true, modifyParcel: result, paymentInfo: resultPayment});
+        };
+
+      }
+      res.send({ success: false });
+    });
+
     // payment realted API
     app.post('/payment-checkout-session', async (req, res) => {
       const paymentInfo = req.body;
@@ -73,7 +110,7 @@ async function run() {
         line_items: [
           {
             price_data: {
-              currence: 'usd',
+              currency: 'USD',
               unit_amount: amount,
               product_data: {
                 name: `Please pay for: ${paymentInfo.percelName}`
@@ -115,7 +152,8 @@ async function run() {
         customer_email: paymentInfo.senderEmail,
         mode: 'payment',
         metadata: {
-          parcelId: paymentInfo.parcelId
+          parcelId: paymentInfo.parcelId,
+          percelName: paymentInfo.percelName
         },
         success_url: `${process.env.SIDE_DOMAIN}/dashboard/payment-success`,
         cancel_url: `${process.env.SIDE_DOMAIN}/dashboard/payment-cancelled`,
